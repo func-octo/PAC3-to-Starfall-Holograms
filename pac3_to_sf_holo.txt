@@ -1,4 +1,4 @@
---@name PAC3 to Holo v1.3.0
+--@name PAC3 to Holo v1.3.1
 --@author Octo
 --@shared
 
@@ -237,6 +237,9 @@ local function buildHolosFromTableApplyClips(tbl, parent)
         local realBoneName = getBoneNameFromPAC( targetEnt, bone.Bone )
         local boneIndex = targetEnt:lookupBone( realBoneName )
         if boneIndex then
+            while SERVER and prop.manipulateBonesLeft() < 4 do
+                coroutine.yield()
+            end
             targetEnt:manipulateBonePosition( boneIndex, bone.Position + bone.PositionOffset )
             targetEnt:manipulateBoneAngles( boneIndex, bone.Angles + bone.AngleOffset )
             targetEnt:manipulateBoneScale( boneIndex, bone.Scale or Vector( 1, 1, 1 ) )
