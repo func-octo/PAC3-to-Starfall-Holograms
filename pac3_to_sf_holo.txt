@@ -1,4 +1,4 @@
---@name PAC3 to Holo v1.2.0
+--@name PAC3 to Holo v1.3.0
 --@author Octo
 --@shared
 
@@ -36,12 +36,53 @@ local function yieldCheck()
     end
 end
 
-local function buildHologramsFromTable(tbl, parent)
+--Strip bone name to match PAC format and see if any match ours.
+local boneNameReplacements =
+{
+    {"Anim_Attachment", "attach"},
+    {"RH", "right hand"},
+    {"LH", "left hand"},
+    {"_L_", " left "},
+    {"_R_", " right "},
+    {"%p", " "},
+    {"ValveBiped", ""},
+    {"Bip01", ""},
+    {"Neck1", "neck"},
+    {"Head1", "head"},
+    {"Toe0", "toe"},
+    {"lowerarm", "lower arm"},
+    {"Bip", ""},
+    {" R", " right"},
+    {" L", " left"}
+}
+local function getBoneNameFromPAC( targetEnt, boneName )
+    local targetBoneCount = targetEnt:getBoneCount()
+    for i = 0, targetBoneCount - 1 do
+        local name = targetEnt:getBoneName( i )
+        local friendly = name
+        
+        if name then
+            for _, entry in pairs( boneNameReplacements ) do
+                friendly = string.gsub( friendly, entry[1], entry[2] )
+            end
+            
+            friendly = string.gsub( string.lower( string.trim( friendly ) ), "(.-)(%d+)", "%1 %2" )
+            
+            if friendly == boneName then
+                return name
+            end
+        end
+    end
+    return ""
+end
+
+local function buildHologramsFromTable(tbl, parent, parentPart)
     parent = parent or chip()
     local holos = {}
     local bodygroups = {}
     local submats = {}
     local clips = {}
+    local bones = {}
     
     for index, part in pairs(tbl) do
         local className = part["self"].ClassName
@@ -52,9 +93,19 @@ local function buildHologramsFromTable(tbl, parent)
             end
             --Build a new hologram with the found info.
             local partInfo = part["self"]
+            local boneParent = parent:lookupBone( getBoneNameFromPAC( parent, partInfo.Bone ) )
             local newHolo = hologram.create(parent:localToWorld(partInfo.Position), parent:localToWorldAngles(partInfo.Angles + partInfo.AngleOffset), partInfo.Model, partInfo.Scale * partInfo.Size)
-            newHolo:setParent(parent)
-            newHolo:setPos(newHolo:localToWorld(partInfo.PositionOffset))
+            
+            if boneParent then
+                local bp, ba = parent:getBonePosition( boneParent )
+                local hp, ha = localToWorld( partInfo.Position + partInfo.PositionOffset, partInfo.Angles + partInfo.AngleOffset, bp, ba )
+                newHolo:setPos( hp )
+                newHolo:setAngles( ha )
+                newHolo:setParent(parent, nil, boneParent)
+            else
+                newHolo:setParent(parent, nil, boneParent)
+                newHolo:setPos(newHolo:localToWorld(partInfo.PositionOffset))
+            end
             
             if className == "model2" then
                 newHolo:setColor(Color(partInfo.Color[1] * 255, partInfo.Color[2] * 255, partInfo.Color[3] * 255, partInfo.Alpha * 255))
@@ -74,9 +125,10 @@ local function buildHologramsFromTable(tbl, parent)
             --Check for children to recurse into.
             if #part.children > 0 then
                 yieldCheck()
-                local children, bodygroups, submats, clipsList = buildHologramsFromTable(part.children, newHolo)
+                local children, bodygroups, submats, clipsList, boneList = buildHologramsFromTable(part.children, newHolo, part)
                 table.add(holos, children)
                 table.add(clips, clipsList)
+                table.add(bones, boneList)
                 yieldCheck()
                 
                 --Apply bodygroups
@@ -91,15 +143,6 @@ local function buildHologramsFromTable(tbl, parent)
                     yieldCheck()
                 end
             end
-        elseif className == "group" then
-            --Check for children to recurse into.
-            if #part.children > 0 then
-                yieldCheck()
-                local children, bodygroups, submats, clipsList = buildHologramsFromTable(part.children, parent)
-                table.add(holos, children)
-                table.add(clips, clipsList)
-                yieldCheck()
-            end
         elseif className == "bodygroup" then
             table.insert(bodygroups, {
                 BodyGroupName = part["self"].BodyGroupName,
@@ -110,27 +153,57 @@ local function buildHologramsFromTable(tbl, parent)
                 SubMaterialId = part["self"].SubMaterialId,
                 Material = part["self"].Material
             })
-        elseif className == "clip2" then
+        elseif className == "clip2" or className == "clip" then
+            local target = part["self"].TargetEntityUID
+            if target == "" then
+                target = parentPart["self"].UniqueID
+            end
             table.insert(clips, {
                 Parent = parent,
-                TargetEntityUID = part["self"].TargetEntityUID,
+                TargetEntityUID = target,
                 Position = part["self"].Position,
                 PositionOffset = part["self"].PositionOffset,
                 Angles = part["self"].Angles,
                 AngleOffset = part["self"].AngleOffset
             })
+        elseif className == "bone" or className == "bone3" then
+            local target = part["self"].TargetEntityUID
+            if target == "" then
+                target = parentPart["self"].UniqueID
+            end
+            table.insert(bones, {
+                Parent = parent,
+                TargetEntityUID = target,
+                Jiggle = part["self"].Jiggle,
+                Position = part["self"].Position,
+                PositionOffset = part["self"].PositionOffset,
+                Angles = part["self"].Angles,
+                AngleOffset = part["self"].AngleOffset,
+                Scale = part["self"].Scale,
+                Bone = part["self"].Bone
+            })
+        else --Covers groups and other intangible elements that may house valid components
+            --Check for children to recurse into.
+            if #part.children > 0 then
+                yieldCheck()
+                local children, bodygroups, submats, clipsList, boneList = buildHologramsFromTable(part.children, parent, part)
+                table.add(holos, children)
+                table.add(clips, clipsList)
+                table.add(bones, boneList)
+                yieldCheck()
+            end
         end
         
         yieldCheck()
     end
     
-    return holos, bodygroups, submats, clips
+    return holos, bodygroups, submats, clips, bones
 end
 
 
 --Need to apply clips after we know all of the holograms.
 local function buildHolosFromTableApplyClips(tbl, parent)
-    local holos, bodygroups, submats, clips = buildHologramsFromTable(tbl, parent)
+    local holos, bodygroups, submats, clips, bones = buildHologramsFromTable(tbl, parent)
     
     --Apply clips
     for index, clip in pairs(clips) do
@@ -144,12 +217,38 @@ local function buildHolosFromTableApplyClips(tbl, parent)
             end
         end
         
-        clip.Parent:setClip(clip.Parent.clipCount + 1, true, clip.Position, clipAng:getForward(), targetEnt)
-        clip.Parent.clipCount = clip.Parent.clipCount + 1
+        targetEnt:setClip(clip.Parent.clipCount + 1, true, clip.Position, -clipAng:getForward(), targetEnt)
+        targetEnt.clipCount = clip.Parent.clipCount + 1
         yieldCheck()
     end
     
-    return holos, bodygroups, submats, clips
+    --Apply bone manip
+    for index, bone in pairs( bones ) do
+        local targetEnt
+        
+        for index, holo in pairs(holos) do
+            if holo.UID == bone.TargetEntityUID then
+                targetEnt = holo
+                break
+            end
+        end
+        
+        
+        local realBoneName = getBoneNameFromPAC( targetEnt, bone.Bone )
+        local boneIndex = targetEnt:lookupBone( realBoneName )
+        if boneIndex then
+            targetEnt:manipulateBonePosition( boneIndex, bone.Position + bone.PositionOffset )
+            targetEnt:manipulateBoneAngles( boneIndex, bone.Angles + bone.AngleOffset )
+            targetEnt:manipulateBoneScale( boneIndex, bone.Scale or Vector( 1, 1, 1 ) )
+            targetEnt:manipulateBoneJiggle( boneIndex, bone.Jiggle or false )
+        else
+            print( "Did not find any bone named '" .. bone.Bone .. "' in model '" .. string.getFileFromFilename( targetEnt:getModel() ) .. "'" )
+        end
+        
+        yieldCheck()
+    end
+    
+    return holos, bodygroups, submats, clips, bones
 end
 
 if CLIENT then
